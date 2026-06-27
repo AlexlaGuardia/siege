@@ -42,9 +42,9 @@ VERDICT: PASS — Siege caught the bug and cleared the fix.
 ## Probe classes
 
 - **Class A — Authz / RBAC bypass** *(implemented)*. Exercises the server as each
-  role and diffs what comes back: redacted-field filter leaks, and (next) row-scope
-  escalation, id enumeration, and error-channel leaks. The fresh part — nobody
-  ships runtime authz probing for MCP.
+  role and diffs what comes back: redacted-field filter leaks, row-scope
+  escalation, id enumeration (IDOR), and forbidden-resource reads; error-channel
+  leaks are next. The fresh part — nobody ships runtime authz probing for MCP.
 - **Class B — Tool poisoning / injection** *(next)*. The *behavioral* version:
   inject a poisoned tool description or result, run a real agent loop, and judge
   (LLM) whether the agent actually got hijacked — not whether the manifest looked
