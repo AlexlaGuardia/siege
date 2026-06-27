@@ -17,7 +17,7 @@ import sys
 from siege.probes.authz import probe_authz
 from siege.report import ScanResult
 
-FIXTURES = {"warden": "fixtures.warden"}
+FIXTURES = {"warden": "fixtures.warden", "leaky": "fixtures.leaky"}
 
 
 async def _scan(target: str) -> ScanResult:
