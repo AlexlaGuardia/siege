@@ -45,10 +45,12 @@ VERDICT: PASS — Siege caught the bug and cleared the fix.
   role and diffs what comes back: redacted-field filter leaks, row-scope
   escalation, id enumeration (IDOR), and forbidden-resource reads; error-channel
   leaks are next. The fresh part — nobody ships runtime authz probing for MCP.
-- **Class B — Tool poisoning / injection** *(next)*. The *behavioral* version:
-  inject a poisoned tool description or result, run a real agent loop, and judge
-  (LLM) whether the agent actually got hijacked — not whether the manifest looked
-  suspicious.
+- **Class B — Tool poisoning / injection** *(implemented)*. The *behavioral*
+  version: present an agent with a benign read tool and an `export_record` sink,
+  inject each payload through the description and output channels, and observe
+  whether the agent fires the sink at an attacker destination it was never asked
+  to. Reports which framings steered the model — a matrix, not a manifest grep.
+  A clean `0/N` is a real result and a regression guard for model upgrades.
 - **Class C — Silent failure / contract violation** *(planned)*. Does the server
   claim success while returning empty or wrong data?
 
