@@ -81,8 +81,13 @@ exact, replayable reproduction.
 
 ## Stack
 
-Python, the official `mcp` SDK (client side), SQLite for run persistence, Claude
-(Opus judge) for the behavioral injection class.
+Python and the official `mcp` SDK (client side). The authz class (Class A) is
+pure deterministic diffing, no model. The behavioral injection class (Class B,
+opt-in via `--inject`) drives an agent with Claude (Haiku by default,
+`SIEGE_AGENT_MODEL` to override) and detects a hijack deterministically, by
+observing whether the exfiltration tool actually fired at the attacker's
+destination — not with an LLM judge. Findings are rendered to JSON or Markdown;
+there is no database.
 
 ---
 
