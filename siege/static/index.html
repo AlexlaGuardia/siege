@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Siege: red-team your live MCP server</title>
+<meta name="description" content="A runtime red-team harness for live MCP servers. It attacks as real roles and finds the access-control bugs a static manifest scanner can't see. Run it yourself.">
+<meta name="theme-color" content="#0b0e14">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://siege.alexlaguardia.dev/">
+<meta property="og:title" content="Siege — red-team your live MCP server">
+<meta property="og:description" content="A runtime red-team harness for live MCP servers. It attacks as real roles and catches the bugs a static manifest scanner can't see.">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#11151f; --line:#1e2533; --ink:#e6edf3;
+    --dim:#8b96a8; --accent:#7ee787; --bad:#ff7b72; --amber:#e3b341;
+    --code:#56d4c4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .wrap{max-width:1000px;margin:0 auto;padding:40px 24px 80px}
+  code{color:var(--code)}
+  header h1{font-size:30px;margin:0;letter-spacing:-.5px}
+  header h1 .dot{color:var(--accent)}
+  header p{color:var(--dim);margin:.5rem 0 0;font-size:14px;max-width:64ch}
+  .suite{margin:.9rem 0 0;font-size:12.5px;color:var(--dim)}
+  .suite a{color:var(--code);text-decoration:none}
+  .suite a:hover{text-decoration:underline}
+  .suite b{color:var(--ink)}
+  .toggle{display:flex;gap:10px;margin:30px 0 4px;flex-wrap:wrap}
+  .toggle button{font:inherit;color:var(--dim);background:var(--panel);
+    border:1px solid var(--line);padding:9px 15px;border-radius:8px;cursor:pointer;transition:.15s}
+  .toggle button:hover{border-color:#33415a}
+  .toggle button.on{color:var(--ink);border-color:#33415a;background:#161c28}
+  .toggle button.on .dotmark{color:var(--bad)}
+  .toggle button.on.clean .dotmark{color:var(--accent)}
+  .toggle .dotmark{margin-right:7px}
+  .panel{display:none}
+  .panel.show{display:block}
+  .banner{margin:16px 0 14px;padding:16px 20px;border-radius:10px;
+    border:1px solid var(--line);display:flex;align-items:flex-start;gap:14px;background:var(--panel)}
+  .banner.ok{border-color:#2c5a37;background:#0e1a12}
+  .banner.bad{border-color:#5a2c2c;background:#1a0e0e}
+  .banner .mark{font-size:15px;font-weight:700;white-space:nowrap;padding-top:1px}
+  .banner.ok .mark{color:var(--accent)}
+  .banner.bad .mark{color:var(--bad)}
+  .banner .sub{color:var(--dim);font-size:12.5px;margin-top:4px}
+  .finding{border:1px solid var(--line);border-left:3px solid var(--bad);
+    border-radius:10px;background:var(--panel);padding:18px 20px;margin:14px 0}
+  .ftitle{font-size:15px;letter-spacing:-.2px}
+  .sevtag{display:inline-block;background:#2a1414;color:var(--bad);border:1px solid #5a2c2c;
+    padding:1px 8px;border-radius:6px;font-size:11px;font-weight:700;margin-right:8px;vertical-align:1px}
+  .meta{color:var(--dim);font-size:12.5px;margin:.5rem 0 .8rem}
+  .repro,.remediation{margin:.55rem 0;font-size:13px}
+  .rlabel{display:inline-block;min-width:74px;color:var(--dim);text-transform:uppercase;
+    font-size:10.5px;letter-spacing:.06em}
+  .repro code{background:#0c1017;border:1px solid var(--line);padding:2px 7px;border-radius:6px}
+  .evwrap{margin:.7rem 0 .3rem;border-top:1px solid var(--line);padding-top:.7rem}
+  .ev{display:flex;gap:12px;padding:3px 0;font-size:13px;align-items:baseline}
+  .ev .k{min-width:150px;color:var(--dim)}
+  .ev .v{color:var(--ink);word-break:break-word}
+  .section-h{font-size:18px;margin:44px 0 2px;letter-spacing:-.3px}
+  .section-p{color:var(--dim);font-size:13px;margin:.4rem 0 0;max-width:70ch}
+  .cov{margin:26px 0 0;color:var(--dim);font-size:12.5px;
+    border:1px dashed var(--line);border-radius:8px;padding:11px 15px}
+  footer{margin-top:34px;color:var(--dim);font-size:12.5px;line-height:1.7;
+    border-top:1px solid var(--line);padding-top:18px}
+  footer a{color:var(--code);text-decoration:none}
+  footer a:hover{text-decoration:underline}
+  footer code{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Siege<span class="dot">.</span></h1>
+    <p>A runtime red-team harness for live MCP servers. Point it at a running
+       server, it attacks as real roles, and it hands back the access-control
+       bugs a static manifest scanner can't see — because the bug isn't in the
+       manifest, it's in how the server behaves when you actually exercise it.</p>
+    <p class="suite"><b>Warden</b> governs · <b>Crumb</b> attributes · <b>Siege</b> proves it holds.
+       See <a href="https://warden.alexlaguardia.dev">Warden</a> and
+       <a href="https://crumb.alexlaguardia.dev">Crumb</a>.</p>
+  </header>
+
+  <div class="toggle">
+    <button id="btn-before" class="on" onclick="show('before')">
+      <span class="dotmark">●</span>Scan vulnerable Warden (<!--VULN-->)</button>
+    <button id="btn-after" class="clean" onclick="show('after')">
+      <span class="dotmark">●</span>Scan fixed Warden (<!--FIXED-->)</button>
+  </div>
+
+  <div id="before" class="panel show"><!--BEFORE--></div>
+  <div id="after" class="panel"><!--AFTER--></div>
+
+  <h2 class="section-h">Why runtime, not static</h2>
+  <p class="section-p">The MCP security tools that exist today read the tool
+    <em>manifest</em> — they grep tool descriptions for poisoned instructions.
+    That catches a real class of attack. It can't catch the one above: the
+    <code>tier</code> field is redacted from the <code>support</code> role's
+    output, so the manifest looks clean, but <code>tier</code> is still accepted
+    as a query <em>filter</em>. The role recovers every hidden value by which rows
+    a filter returns. A manifest scan returns green. Siege catches it by behaving
+    like the <code>support</code> role against the live server.</p>
+
+  <div class="cov"><!--COVERAGE--> This demo runs the authz probe only; Siege also
+    has a behavioral tool-poisoning probe (Class B) that runs a real agent loop and
+    judges whether it got hijacked — not shown in this canned run. No "finds all vulns."</div>
+
+  <footer>
+    Don't trust this page. Run it yourself: <code>python -m scripts.demo_before_after</code>
+    stands up vulnerable Warden in a throwaway worktree, attacks it, and confirms the
+    fix closes the leak. The only target is our own Warden fixture; nothing here scans
+    third-party servers.<br>
+    Snapshot generated <code><!--GENERATED--></code> ·
+    Source: <a href="https://github.com/AlexlaGuardia/siege">github.com/AlexlaGuardia/siege</a>
+  </footer>
+</div>
+
+<script>
+  function show(which){
+    document.getElementById('before').classList.toggle('show', which === 'before');
+    document.getElementById('after').classList.toggle('show', which === 'after');
+    document.getElementById('btn-before').classList.toggle('on', which === 'before');
+    document.getElementById('btn-after').classList.toggle('on', which === 'after');
+  }
+</script>
+</body>
+</html>

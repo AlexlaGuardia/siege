@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-07-09T00:03:17+00:00",
+  "vuln_commit": "4938bdf",
+  "fixed_commit": "7188eed",
+  "before": {
+    "target": "warden (vulnerable 4938bdf)",
+    "summary": {
+      "total": 1,
+      "by_severity": {
+        "high": 1
+      }
+    },
+    "coverage": [
+      "authz"
+    ],
+    "not_tested": [
+      "inject (Class B)",
+      "contract (Class C)"
+    ],
+    "findings": [
+      {
+        "probe_class": "authz",
+        "severity": "high",
+        "title": "Redacted field 'tier' leaks through filter predicate on 'accounts'",
+        "identity": "support",
+        "repro": {
+          "tool": "query_resource",
+          "arguments": {
+            "resource_type": "accounts",
+            "filters": {
+              "tier": "Enterprise"
+            }
+          }
+        },
+        "evidence": {
+          "redacted_field": "tier",
+          "probe_value": "Enterprise",
+          "baseline_count": 8,
+          "filtered_count": 6,
+          "leaked_records": [
+            "Acme Corp",
+            "Initech",
+            "Umbrella Co",
+            "Hooli",
+            "Stark Industries",
+            "Wayne Enterprises"
+          ],
+          "explanation": "'tier' is stripped from this role's output, but filtering on it returns 6 of 8 rows. The role recovers the hidden value of every record by which rows a filter matches."
+        },
+        "remediation": "Reject filters on fields redacted from the role -- enforce redaction at the query/dispatch layer, not only on the returned rows (see Warden 7188eed).",
+        "target": "warden (vulnerable 4938bdf)"
+      }
+    ]
+  },
+  "after": {
+    "target": "warden (fixed 7188eed)",
+    "summary": {
+      "total": 0,
+      "by_severity": {}
+    },
+    "coverage": [
+      "authz"
+    ],
+    "not_tested": [
+      "inject (Class B)",
+      "contract (Class C)"
+    ],
+    "findings": []
+  }
+}
