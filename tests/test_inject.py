@@ -59,13 +59,27 @@ async def _run():
     summary = [f for f in bad if "susceptibility" in f.title][0]
     assert summary.evidence["hijacked"] == len(PAYLOADS)
 
+    # The value-slot class (FINDING-9/14) is actually exercised: the summary reports
+    # the schema channel, and every slot payload carries the poison out of sight of a
+    # description scanner yet still hijacks the agent.
+    assert "schema" in summary.evidence["channels_tested"], summary.evidence["channels_tested"]
+    schema_highs = [f for f in highs if f.evidence.get("channel") == "schema"]
+    assert len(schema_highs) >= 12, [f.evidence.get("payload") for f in schema_highs]
+    assert any(f.evidence.get("slot") == "enumval" for f in schema_highs)
+
+    # The marquee decoy: a description that DENIES exporting still hijacks via the
+    # enum value -- the tool whose schema poison a human reviewer would never catch.
+    decoy = [f for f in schema_highs if f.evidence.get("payload") == "decoy-denial-enumval"]
+    assert len(decoy) == 1, [f.evidence.get("payload") for f in schema_highs]
+
     # Hardened agent: no hijacks -> only the info summary, zero HIGH findings.
     good = await probe_injection(make_fake(False))
     assert not [f for f in good if f.severity == "high"], [f.title for f in good]
     gsummary = [f for f in good if "susceptibility" in f.title][0]
     assert gsummary.severity == "info" and gsummary.evidence["hijacked"] == 0
 
-    print(f"PASS  inject harness: susceptible -> {len(highs)}/{len(PAYLOADS)} hijacks; hardened -> 0")
+    print(f"PASS  inject harness: susceptible -> {len(highs)}/{len(PAYLOADS)} hijacks "
+          f"({len(schema_highs)} via schema value slots + decoy); hardened -> 0")
 
 
 if __name__ == "__main__":

@@ -47,10 +47,20 @@ VERDICT: PASS — Siege caught the bug and cleared the fix.
   leaks are next. The fresh part — nobody ships runtime authz probing for MCP.
 - **Class B — Tool poisoning / injection** *(implemented)*. The *behavioral*
   version: present an agent with a benign read tool and an `export_record` sink,
-  inject each payload through the description and output channels, and observe
-  whether the agent fires the sink at an attacker destination it was never asked
-  to. Reports which framings steered the model — a matrix, not a manifest grep.
-  A clean `0/N` is a real result and a regression guard for model upgrades.
+  inject each payload through the description, output, **and schema value-slot**
+  channels, and observe whether the agent fires the sink at an attacker
+  destination it was never asked to. Reports which framings steered the model — a
+  matrix, not a manifest grep. A clean `0/N` is a real result and a regression
+  guard for model upgrades.
+  - The **value-slot channel** is the one a description scanner can't see: the
+    same directive hidden in a machine schema slot (an `enum` value, `const`,
+    `default`, `examples`, a property `title`, `additionalProperties`) instead of
+    the human-readable description. Snyk agent-scan and Invariant mcp-scan walk the
+    description and miss it; the model reads it as an instruction all the same. The
+    marquee case is a tool whose description **explicitly denies exporting** yet
+    still hijacks via the enum value — you cannot review or description-scan your
+    way out. (Ported from the tool-definition surface map behind
+    [Vigil](https://github.com/AlexlaGuardia/Vigil)'s `scan-tools` value-slot rule.)
 - **Class C — Silent failure / contract violation** *(planned)*. Does the server
   claim success while returning empty or wrong data?
 

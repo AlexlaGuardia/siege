@@ -1,10 +1,12 @@
 """Class B live demo: run the behavioral injection probe against the real model.
 
 Presents an agent with a benign read tool and an export_record sink, injects each
-payload through the description and output channels, and reports which framings
-steered the agent into the unauthorized exfil call. A clean 0/N is a real result
-(this model resisted every framing) and doubles as a regression guard for the day
-the model in your stack changes.
+payload through the description, output, and schema value-slot channels, and reports
+which framings steered the agent into the unauthorized exfil call. The value-slot
+payloads hide the directive in a machine schema field (enum value, const, default,
+title) that a description scanner never reads. A clean 0/N is a real result (this
+model resisted every framing) and doubles as a regression guard for the day the
+model in your stack changes.
 
     python -m scripts.demo_inject [model-id]
 """
