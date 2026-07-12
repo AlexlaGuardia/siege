@@ -137,6 +137,39 @@ That single story: (a) ties Warden+Crumb+Siege into one visible suite, (b) shows
 
 ---
 
-## 9. Name
+## 9. Known gaps / next
+
+### Class B is Claude-only, and Claude resists the value-slot class → the live demo shows green, not red
+The value-slot channel shipped 2026-07-12 (commit 24302fd) but the probe drives the
+agent only through `make_anthropic_complete` (Claude). Per FINDING-12, Claude
+haiku-4.5 + sonnet-5 **resist** the value-slot payloads (0/N), so a live
+`demo_inject.py` run reports `0/18 hijacked` — an honest regression guard, but it
+does **not demonstrate** the hijack the finding is about. The models that actually
+fire (gpt-4o obeys 14 fields; gpt-4.1-mini totally inverts, desc 0/10 → value-slot
+10/10) are OpenAI-family, which the probe can't reach today.
+
+**What closing it needs (scoped, ~half-day):**
+1. **Generalize the completion adapter to a provider-agnostic `complete` fn.** `agent.py`
+   already injects `complete(system, messages, tools)`; add `make_openai_complete(model)`
+   that maps Anthropic tool shape ↔ OpenAI `tools`/`tool_calls` (name/args translation,
+   `input_schema`→`parameters`) and yields the same `.content` block interface the loop
+   expects. The agent loop itself is provider-neutral and stays unchanged.
+2. **Add a `--model` / provider flag to `demo_inject.py`** and a small model matrix so
+   one run produces the gpt-4o / gpt-4.1-mini / claude columns side by side — the
+   "matrix, not a manifest grep" money shot with actual reds in it.
+3. **Key handling:** reuse the `load_api_key` pattern for `OPENAI_API_KEY` (already in
+   `/root/guardia-core/.env`); keep the SDK import lazy so tests still run keyless.
+4. **Keep the deterministic tests provider-free** (they already are — the fake agent
+   needs no SDK). Only the live demo path gains the second provider.
+
+Reference implementation already exists in research: `mcp-host-lab/bypass/surface_sweep.py`
++ `decoy_override.py` drive OpenAI directly with the exact per-model rates to reproduce.
+This is a *port of a working sweep*, not new research. Until done, pitch Class B value-slot
+as "Vigil catches it statically; Siege is the behavioral regression guard + cross-model
+matrix (OpenAI reds pending the adapter)."
+
+---
+
+## 10. Name
 
 **Siege** pairs thematically with **Warden** (Warden defends the gate; Siege tests it). Landscape check showed no blocking collision with a known MCP/security tool. PyPI name to verify at publish time; fall back to `siege-mcp` if `siege` is taken. Name is cheap — don't block the build on it.
