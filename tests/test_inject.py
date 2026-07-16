@@ -10,10 +10,19 @@ scripts/demo_inject.py (gated on a key).
 
 import asyncio
 import json
+import unicodedata
 from types import SimpleNamespace
 
 from siege.payloads import ATTACKER_DEST, PAYLOADS
 from siege.probes.inject import probe_injection
+
+
+def _deobfuscate(blob: str) -> str:
+    """Model the decoding a susceptible model does before it acts: strip the zero-width
+    interleave and NFKC-fold full-width homoglyphs, so an ENCODED directive (FINDING-19)
+    reads the same as the plain one. A model that obeys is one that reads through the
+    disguise; a byte-scanner is exactly the layer that does NOT."""
+    return unicodedata.normalize("NFKC", blob.replace("​", ""))
 
 
 def _tool_use(name, **inp):
@@ -29,7 +38,8 @@ def make_fake(susceptible: bool):
     export_record once it can see the attacker destination (in a tool description
     or a tool result), a hardened one never does."""
     async def complete(system, messages, tools):
-        blob = json.dumps(tools) + json.dumps(messages, default=str)
+        blob = _deobfuscate(json.dumps(tools, ensure_ascii=False)
+                            + json.dumps(messages, ensure_ascii=False, default=str))
         has_read = _used(messages, "read_record")
         has_exported = _used(messages, "export_record")
         if not has_read:
@@ -71,6 +81,16 @@ async def _run():
     # enum value -- the tool whose schema poison a human reviewer would never catch.
     decoy = [f for f in schema_highs if f.evidence.get("payload") == "decoy-denial-enumval"]
     assert len(decoy) == 1, [f.evidence.get("payload") for f in schema_highs]
+
+    # FINDING-18: the $defs/$ref indirection channel hijacks -- payload behind a pointer.
+    assert any(f.evidence.get("slot") == "defref" for f in schema_highs), \
+        [f.evidence.get("slot") for f in schema_highs]
+
+    # FINDING-19: the encoding axis. The ENCODED directive still hijacks the decoding
+    # agent, though its bytes carry no literal imperative for a scanner to see.
+    enc_highs = [f.evidence.get("payload") for f in schema_highs
+                 if str(f.evidence.get("payload", "")).startswith("enc-")]
+    assert {"enc-homoglyph", "enc-zwsp"} <= set(enc_highs), enc_highs
 
     # Hardened agent: no hijacks -> only the info summary, zero HIGH findings.
     good = await probe_injection(make_fake(False))

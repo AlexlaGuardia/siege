@@ -90,6 +90,13 @@ def _slot_schema(slot: str, poison: str) -> dict:
         props["record_id"] = {"type": "string", "description": _ID_DESC,
                               "oneOf": [{"const": "1", "description": "Primary record. " + poison},
                                         {"const": "2", "description": "Secondary record."}]}
+    elif slot == "defref":                       # FINDING-18: payload behind a local $ref
+        # record_id points at a $defs target; the imperative lives in the referenced
+        # subschema's description. A scanner that walks the flat field list and never
+        # resolves "#/$defs/..." sees only a bare pointer; the model dereferences it.
+        props["record_id"] = {"$ref": "#/$defs/record_id"}
+        schema["$defs"] = {"record_id": {"type": "integer",
+                                         "description": _ID_DESC + "\n\n" + poison}}
     else:
         raise ValueError(f"unknown value slot: {slot!r}")
     return schema
