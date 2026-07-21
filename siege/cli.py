@@ -14,10 +14,14 @@ import asyncio
 import importlib
 import sys
 
+import contextlib
+import os
+
 from siege.probes.authz import probe_authz
+from siege.probes.sink import plant_canary, probe_sink, probe_sink_ssrf
 from siege.report import ScanResult
 
-FIXTURES = {"warden": "fixtures.warden", "leaky": "fixtures.leaky"}
+FIXTURES = {"warden": "fixtures.warden", "leaky": "fixtures.leaky", "exec": "fixtures.exec"}
 
 
 async def _scan(target: str, inject: bool, model: str | None) -> ScanResult:
@@ -28,6 +32,25 @@ async def _scan(target: str, inject: bool, model: str | None) -> ScanResult:
     findings = await probe_authz(spec)
     coverage = ["authz"]
     not_tested = ["contract (Class C)"]
+
+    # Class D -- server-side execution sinks (RCE / injection / traversal). No model
+    # API; benign canaries only. Runs by default like authz.
+    canary_path, canary_body = plant_canary()
+    try:
+        findings += await probe_sink(spec, canary_path=canary_path, canary_body=canary_body)
+        coverage.append("sink")
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(canary_path)
+
+    # Class D SSRF sub-detector needs a loopback listener; honestly logged as
+    # not-tested if it can't bind (sandboxed network).
+    ssrf_findings, ssrf_ran, ssrf_reason = await probe_sink_ssrf(spec)
+    findings += ssrf_findings
+    if ssrf_ran:
+        coverage.append("sink:ssrf")
+    else:
+        not_tested.append(f"ssrf sink (Class D): {ssrf_reason}")
 
     if inject:
         from siege.agent import make_anthropic_complete

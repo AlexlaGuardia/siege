@@ -64,6 +64,16 @@ async def _learn_schema(spec) -> dict:
 async def probe_authz(spec) -> list:
     """Run the authz/RBAC-bypass detectors. Returns list[Finding]."""
     findings: list = []
+    # No-op on a target that doesn't expose this probe's tool contract, rather than
+    # blowing up trying to call a tool that isn't there (a server may be pure exec /
+    # fetch with no resource-query surface at all).
+    try:
+        async with open_session(spec, spec.most_permissive().name) as p:
+            names = {t["name"] for t in await p.list_tools()}
+    except Exception:
+        return findings
+    if T_LIST not in names:
+        return findings
     try:
         schema = await _learn_schema(spec)
     except ToolError:

@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import McpError
 
 
 class ToolError(Exception):
@@ -45,7 +46,14 @@ class ToolCaller:
         an application-level denial (Warden's access_denied object) comes back as
         an ordinary dict, because to a red-teamer that IS the data.
         """
-        result = await self._session.call_tool(name, arguments or {})
+        # A server signals a failed tool call two ways: an isError result (content
+        # channel) or a JSON-RPC error (protocol channel), which the SDK raises as
+        # McpError. Normalize BOTH to ToolError so every probe handles a tool failure
+        # uniformly and one erroring call can't tear down the session mid-sweep.
+        try:
+            result = await self._session.call_tool(name, arguments or {})
+        except McpError as e:
+            raise ToolError(f"{name}: {e}") from e
         if result.isError:
             text = _first_text(result) or "tool error"
             raise ToolError(f"{name}: {text}")

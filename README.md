@@ -61,6 +61,49 @@ VERDICT: PASS — Siege caught the bug and cleared the fix.
     still hijacks via the enum value — you cannot review or description-scan your
     way out. (Ported from the tool-definition surface map behind
     [Vigil](https://github.com/AlexlaGuardia/Vigil)'s `scan-tools` value-slot rule.)
+- **Class D — Server-side execution sinks** *(implemented)*. Exercises the server's
+  own code, not the agent: does a tool parameter reach a shell, a filesystem path,
+  or (next) an outbound fetch? Targeting is schema-driven — Siege classifies each
+  tool's string params into exec / path / url sinks and aims the matching canary at
+  each — the runtime analog of a static taint scan, but *proven by execution*. A
+  blind arithmetic oracle (`$((a*b))` resolves only when a shell evaluates it)
+  separates real command execution from a tool that merely parrots your input back
+  in an error, so a reflected payload is not a false positive. Detectors:
+  - **allowlist bypass** — a tool that *claims* a safe/restricted command set still
+    runs a non-allowlisted binary via a LOLBIN (`env`, `sh -c`). A shell tool with
+    *no* safety claim is by-design and stays silent — the finding is a defeated
+    control, not the mere ability to run a command.
+  - **parameter injection** — a shell metacharacter in a *non-command* param (a
+    filename, a tag) breaks into the shell the tool runs.
+  - **path traversal / sandbox escape** — a path param reaches a Siege-planted
+    canary file outside the intended root (absolute or `../`).
+  - **SSRF** — a url param fetches a Siege-controlled *loopback* listener with no
+    host validation. A safe fetcher blocks loopback/link-local/private ranges; one
+    that reaches `127.0.0.1` reaches `169.254.169.254` by the same missing guard.
+    Flags only a fetch Siege *observed* land, so a by-design public fetcher stays
+    silent; degrades to `not_tested` where the listener can't bind.
+
+  Every detector maps to a real, confirmed CVE-class finding — these are the
+  receipts behind the class, not hypotheticals. Target repos are withheld while their
+  advisories are in coordinated disclosure; the classes are exact:
+
+  | Detector | Backed by |
+  |---|---|
+  | allowlist bypass | An MCP SSH server whose allowlist checks only the first token and ships `env`/`git` as exec primitives → RCE (critical, CWE-77/78). Plus two other command-runner servers (prefix-only check; LOLBIN). |
+  | parameter injection | A media-processing MCP server: client `output_filename` interpolated unquoted into the shell command → CWE-78. |
+  | path traversal | A code-execution MCP server: unsanitized `project_dir` bind-mounted into the "sandbox"; the sanitize guard compiled out of the default build → CWE-22. |
+  | SSRF | A fetch/retrieval MCP server: a read tool fetches a client URL with zero host validation and follows redirects → `169.254.169.254` → CWE-918. |
+
+  Static manifest scanners return green on every one — the schema says `string`; it
+  can't say *unquoted into `sh -c`*. (Sink taxonomy shared with the static
+  codebug-hunt scout that found them — the two are the same taint model, one at
+  rest and one at runtime.)
+
+  **Live-confirmed.** Pointed at a running third-party media-processing MCP server
+  over real MCP stdio, the *generic* probe (no target-specific tuning) reports the
+  injection as CRITICAL, proven by the out-of-band oracle — an injected command wrote
+  a Siege canary to a file. The fixtures prove the probe; a live third-party server
+  proves the pitch.
 - **Class C — Silent failure / contract violation** *(planned)*. Does the server
   claim success while returning empty or wrong data?
 
