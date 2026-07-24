@@ -39,6 +39,10 @@ async def _run():
         vuln_ssrf, ran, reason = await probe_sink_ssrf(spec())
         if ran:
             assert any("ssrf" in f.title.lower() for f in vuln_ssrf), [f.title for f in vuln_ssrf]
+            # scalar url (fetch_url) AND the array-url batch shape (fetch_urls, F2) both fire.
+            assert any(not f.evidence.get("batch_scan") for f in vuln_ssrf), [f.title for f in vuln_ssrf]
+            assert any(f.evidence.get("batch_scan") for f in vuln_ssrf), \
+                "array-url (batch-scan) SSRF not detected: " + str([f.title for f in vuln_ssrf])
             fixed_ssrf, _, _ = await probe_sink_ssrf(spec(fixed=True))
             assert fixed_ssrf == [], [f.title for f in fixed_ssrf]
             ssrf_note = f"{len(vuln_ssrf)} on vuln, 0 on fixed"

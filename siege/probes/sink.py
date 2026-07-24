@@ -38,8 +38,12 @@ disclosure; restore the names once each is public.
 
   4. ssrf  -- a url parameter is fetched with no host validation, so the server
      reaches a Siege-controlled (and by extension an internal / metadata) endpoint.
-     Receipt: a fetch/retrieval MCP server -- a read tool fetches a client URL with zero
-     host validation and follows redirects -> 169.254.169.254 (CWE-918).
+     Detects both a scalar url param and an array-of-url param (a list fetched in a
+     loop = a batched internal port/host-scan oracle -- the shape a scalar-only field
+     enumerator misses). Receipts: two fetch/retrieval MCP servers whose read tools
+     fetch a client URL with zero host validation, one following redirects (F1/F2/R3,
+     CWE-918) -- LIVE-confirmed: the unmodified probe reported 4 SSRF sinks against a
+     source-built third-party scraper over real MCP stdio (2026-07-23).
 
 Detection is deterministic and benign: every canary is a unique token echoed/served
 by Siege; a finding requires that exact token to come back through the tool's own
@@ -107,27 +111,48 @@ def _string_params(tool: dict) -> dict:
     return out
 
 
+def _array_string_params(tool: dict) -> dict:
+    """param_name -> param_description, for every array-of-string input param. These
+    are a distinct sink shape: a URL *list* fetched in a loop is a batched internal
+    port-scan oracle (the scrape_multiple / F2 escalation), invisible to a scanner that
+    only enumerates scalar string fields. Kept separate from _string_params so the
+    exec/path/injection detectors -- which build scalar payloads -- are unaffected."""
+    schema = tool.get("input_schema") or {}
+    props = schema.get("properties") or {}
+    out = {}
+    for name, spec in props.items():
+        if not isinstance(spec, dict) or spec.get("type") != "array":
+            continue
+        it = (spec.get("items") or {}).get("type")
+        if it == "string" or it is None:
+            out[name] = (spec.get("description") or "")
+    return out
+
+
 def _has(text: str, needles) -> bool:
     t = text.lower()
     return any(n in t for n in needles)
 
 
 def _classify(tool: dict) -> dict:
-    """Return {exec:[params], path:[params], url:[params], claims:bool, invokes:bool}."""
+    """Return {exec, path, url, url_array, claims, invokes, params}. url_array is the
+    subset of url params that are array-of-string (fetched as a list -> batch-scan)."""
     name, desc = tool.get("name", ""), tool.get("description", "")
     params = _string_params(tool)
     exec_p, path_p, url_p = [], [], []
     for p, pdesc in params.items():
-        blob = f"{p} {pdesc}"
         if _has(p, _EXEC_NAME) or _has(pdesc, _EXEC_DESC):
             exec_p.append(p)
         elif _has(p, _URL_NAME):
             url_p.append(p)
         elif _has(p, _PATH_NAME):
             path_p.append(p)
+    # array-of-string url params: a distinct SSRF sink (a URL list -> loop fetch).
+    url_array = [p for p in _array_string_params(tool) if _has(p, _URL_NAME)]
+    url_p += url_array
     claims = _has(f"{name} {desc}", _CLAIM) or any(_has(d, _CLAIM) for d in params.values())
     invokes = bool(exec_p) or _has(f"{name} {desc}", _INVOKES_PROC)
-    return {"exec": exec_p, "path": path_p, "url": url_p,
+    return {"exec": exec_p, "path": path_p, "url": url_p, "url_array": set(url_array),
             "claims": claims, "invokes": invokes, "params": params}
 
 
@@ -513,8 +538,12 @@ async def probe_sink_ssrf(spec) -> tuple[list, bool, str]:
 async def _ssrf_tool(s, tool, cls, identity, canary, real_file) -> list:
     out = []
     for up in cls["url"]:
+        is_array = up in cls.get("url_array", set())
         token = "t" + secrets.token_hex(5)
-        args = _fill_args(tool, up, canary.url(token), real_file)
+        # An array url param is fetched in a loop -> a single element still proves the
+        # missing guard, and the shape IS the batched-scan escalation (F2).
+        sink_value = [canary.url(token)] if is_array else canary.url(token)
+        args = _fill_args(tool, up, sink_value, real_file)
         try:
             resp = await s.call(tool["name"], args)
         except ToolError:
@@ -527,21 +556,26 @@ async def _ssrf_tool(s, tool, cls, identity, canary, real_file) -> list:
                 break
             await asyncio.sleep(0.1)
         if hit:
+            batch = (" (array param -> a URL LIST fetched in a loop is a batched "
+                     "internal port/host-scan oracle)") if is_array else ""
             out.append(Finding(
                 probe_class="sink", severity="high",
-                title=f"SSRF on '{tool['name']}' via '{up}': fetches an unvalidated loopback URL",
+                title=(f"SSRF on '{tool['name']}' via '{up}': fetches an unvalidated loopback URL"
+                       + (" (batch)" if is_array else "")),
                 identity=identity,
                 repro={"tool": tool["name"], "arguments": args},
                 evidence={
                     "sink_param": up, "fetched": canary.url(token),
                     "observed": "listener hit" if token in canary.hits else "canary body returned",
+                    "batch_scan": is_array,
                     "explanation": ("The tool fetched a Siege-controlled loopback address with no host "
                                     "validation. A safe fetcher blocks loopback/link-local/private ranges; "
                                     "this one reaches 127.0.0.1 -- and by the same missing guard, "
-                                    "169.254.169.254 (cloud metadata) and internal services."),
+                                    "169.254.169.254 (cloud metadata) and internal services." + batch),
                 },
                 remediation=("Resolve the host and reject loopback, link-local (169.254.0.0/16), and private "
                              "ranges BEFORE fetching; re-validate after every redirect; do not follow "
-                             "redirects to blocked ranges (the unvalidated-fetch class, CWE-918)."),
+                             "redirects to blocked ranges (the unvalidated-fetch class, CWE-918). Apply the "
+                             "guard to every element of a URL-list param, not just scalar url fields."),
             ))
     return out

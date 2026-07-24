@@ -12,6 +12,10 @@ finding so the probe has real bugs to catch:
   * read_file     -- joins a client `path` with no confinement, so an absolute or
                      `../` path escapes the workspace root.
                      (a code-execution MCP server, R2, CWE-22.)
+  * fetch_url     -- fetches a client `url` with no host validation -> loopback /
+                     link-local / metadata (a retrieval MCP server, F1, CWE-918).
+  * fetch_urls    -- same, but a URL *list* fetched in a loop = a batched internal
+                     port/host-scan oracle the scalar-field guard misses (F2).
 
 Set SIEGE_EXEC_FIXED=1 to run the PATCHED variant (argv exec, strict resolved
 allowlist, canonicalized-and-confined paths). The probe must go loud on the
@@ -101,23 +105,52 @@ def read_file(path: str) -> dict:
         return {"error": str(e)}
 
 
+def _ssrf_blocked(url: str) -> str | None:
+    """Return a reason if the URL's host is loopback/link-local/private, else None."""
+    host = urlparse(url).hostname or ""
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(host))
+    except (ValueError, socket.gaierror):
+        return "unresolvable host"
+    if ip.is_loopback or ip.is_link_local or ip.is_private:
+        return f"blocked host {host} ({ip})"
+    return None
+
+
 @mcp.tool()
 def fetch_url(url: str) -> dict:
     """Fetch a URL and return its body. Used to pull remote resources for the agent."""
     if FIXED:
         # Reject loopback / link-local / private before fetching (SSRF guard).
-        host = urlparse(url).hostname or ""
-        try:
-            ip = ipaddress.ip_address(socket.gethostbyname(host))
-            if ip.is_loopback or ip.is_link_local or ip.is_private:
-                return {"error": f"blocked host {host} ({ip})"}
-        except (ValueError, socket.gaierror):
-            return {"error": "unresolvable host"}
+        blocked = _ssrf_blocked(url)
+        if blocked:
+            return {"error": blocked}
     try:
         with urllib.request.urlopen(url, timeout=3) as r:   # VULN: no host validation
             return {"body": r.read(4096).decode("utf-8", "replace")}
     except Exception as e:
         return {"error": str(e)}
+
+
+@mcp.tool()
+def fetch_urls(urls: list[str]) -> dict:
+    """Fetch several URLs and return each body. A batch retrieval helper for the agent.
+
+    Reproduces the F2 (scrape_multiple) escalation: a URL *list* fetched in a loop is a
+    batched internal port/host-scan oracle, and the scalar-only guard misses the array."""
+    out = {}
+    for u in urls:
+        if FIXED:
+            blocked = _ssrf_blocked(u)
+            if blocked:
+                out[u] = {"error": blocked}
+                continue
+        try:
+            with urllib.request.urlopen(u, timeout=3) as r:   # VULN: no host validation
+                out[u] = {"body": r.read(4096).decode("utf-8", "replace")}
+        except Exception as e:
+            out[u] = {"error": str(e)}
+    return out
 
 
 if __name__ == "__main__":
