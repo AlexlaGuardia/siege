@@ -25,6 +25,11 @@ async def _run():
         assert any("allowlist bypass" in t.lower() for t in titles), titles
         assert any("command injection" in t.lower() for t in titles), titles
         assert any("traversal" in t.lower() or "escape" in t.lower() for t in titles), titles
+        assert any("sql injection" in t.lower() for t in titles), titles
+        # the SQL finding carries the parser-error signature that proved it (differential)
+        sqli = [f for f in vuln if "sql injection" in f.title.lower()]
+        assert sqli and all(f.evidence.get("sql_error_signature") for f in sqli), \
+            [f.evidence for f in sqli]
         # every finding carries a replayable repro and the canary that proved it
         for f in vuln:
             assert f.repro.get("tool") and f.repro.get("arguments"), f.title

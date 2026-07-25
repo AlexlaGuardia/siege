@@ -45,6 +45,18 @@ disclosure; restore the names once each is public.
      CWE-918) -- LIVE-confirmed: the unmodified probe reported 4 SSRF sinks against a
      source-built third-party scraper over real MCP stdio (2026-07-23).
 
+  5. sql-injection  -- a table/column/clause/query string param is interpolated into a
+     SQL string rather than bound as a parameter. Proven by a PARSER-error differential:
+     a benign control value returns no SQL error, an unbalanced-quote payload makes the
+     database's own parser raise a syntax error the tool reflects. Benign (never
+     UNION-exfils or mutates -- an unbalanced quote proves the parser saw it). Receipt: a
+     DB-inspection MCP server whose `table_name` MCP arg is f-string'd into
+     `SELECT * FROM {table_name} LIMIT {limit}` with zero validation -> arbitrary read/
+     exfil across all four transports (G1, CWE-89). Scope: catches sinks that reflect the
+     DB error (the common shape, incl. G1's `return {"error": str(e)}`); a blind,
+     error-swallowing SQL sink is an honest not-caught -- there is no benign out-of-band
+     channel for SQL (we will not mutate a target's database to prove a write).
+
 Detection is deterministic and benign: every canary is a unique token echoed/served
 by Siege; a finding requires that exact token to come back through the tool's own
 response (or Siege's loopback listener). Payloads never destroy or exfiltrate --
@@ -93,6 +105,14 @@ _PATH_NAME = ("path", "file", "filepath", "filename", "dir", "directory", "folde
               "source", "dest", "destination", "output", "input", "target")
 _URL_NAME = ("url", "uri", "endpoint", "host", "hostname", "link", "address",
              "webhook", "callback", "remote", "site", "resource_url", "feed")
+# SQL-sink param hints. A string param named like a table/column/clause -- or a
+# whole-query param -- that reaches an interpolated SQL string. The G1 shape: a
+# `table_name` f-string'd into `SELECT * FROM {table_name}`.
+_SQL_NAME = ("table", "table_name", "tablename", "column", "col", "query", "sql",
+             "where", "filter", "order", "orderby", "order_by", "sort", "sortby",
+             "schema", "field", "select", "condition", "clause", "statement")
+_SQL_DESC = ("sql", "query", "table", "database", "select", "column", "schema",
+             "row", "record", "describe")
 
 MAX_TOOLS = 40   # bound the sweep on a large server
 
@@ -135,8 +155,10 @@ def _has(text: str, needles) -> bool:
 
 
 def _classify(tool: dict) -> dict:
-    """Return {exec, path, url, url_array, claims, invokes, params}. url_array is the
-    subset of url params that are array-of-string (fetched as a list -> batch-scan)."""
+    """Return {exec, path, url, sql, url_array, claims, invokes, params}. url_array is
+    the subset of url params that are array-of-string (fetched as a list -> batch-scan).
+    sql is the subset of string params that look like a SQL identifier/clause/query on a
+    tool that touches a database (the G1 table_name-into-f-string shape)."""
     name, desc = tool.get("name", ""), tool.get("description", "")
     params = _string_params(tool)
     exec_p, path_p, url_p = [], [], []
@@ -150,10 +172,17 @@ def _classify(tool: dict) -> dict:
     # array-of-string url params: a distinct SSRF sink (a URL list -> loop fetch).
     url_array = [p for p in _array_string_params(tool) if _has(p, _URL_NAME)]
     url_p += url_array
+    # SQL sinks: gate on a DB context (tool name/desc or a SQL-shaped param desc) so a
+    # plain `order`/`filter` field on a non-DB tool doesn't get SQL payloads. A param is
+    # a SQL sink if its NAME looks SQL-ish OR its DESCRIPTION says query/table/column.
+    db_ctx = _has(f"{name} {desc}", _SQL_DESC)
+    sql_p = [p for p, pdesc in params.items()
+             if (db_ctx and _has(p, _SQL_NAME)) or _has(pdesc, _SQL_DESC)]
     claims = _has(f"{name} {desc}", _CLAIM) or any(_has(d, _CLAIM) for d in params.values())
     invokes = bool(exec_p) or _has(f"{name} {desc}", _INVOKES_PROC)
-    return {"exec": exec_p, "path": path_p, "url": url_p, "url_array": set(url_array),
-            "claims": claims, "invokes": invokes, "params": params}
+    return {"exec": exec_p, "path": path_p, "url": url_p, "sql": sql_p,
+            "url_array": set(url_array), "claims": claims, "invokes": invokes,
+            "params": params}
 
 
 def _oracle() -> tuple[str, str]:
@@ -386,6 +415,91 @@ async def _path_traversal(s, tool, cls, identity, canary_path, canary_body, real
     return out
 
 
+# --- detector 5: SQL injection ----------------------------------------------------
+
+# PARSER-level error signatures. These appear ONLY when an injected metacharacter (a
+# quote / paren) reached the SQL parser as syntax -- i.e. the value was interpolated,
+# not bound. Deliberately excludes SEMANTIC errors ("no such table", "unknown column"):
+# those fire for any bad identifier whether or not the query is injectable, so they are
+# not proof. A safely-parameterized value never produces a syntax error (the quote is
+# data); a validated identifier rejects the control and the payload identically.
+_SQL_SYNTAX_SIGNS = (
+    "syntax error", "unrecognized token", "unterminated", "unclosed quotation",
+    "quoted string not properly terminated", 'near "', "near '", "unexpected token",
+    "you have an error in your sql syntax", "sql command not properly ended",
+    "malformed", "sqlstate[42",  # SQLSTATE class 42 = syntax error / access violation
+    "operationalerror", "programmingerror",  # driver exception classes (pymysql/sqlite3/psycopg2)
+)
+
+# A benign control (won't exist as a table -> at most a SEMANTIC error, never a syntax
+# one) and quote-breaking payloads. The payloads carry NO destructive intent -- an
+# unbalanced quote/paren proves the parser saw it; we never UNION-exfil or mutate.
+_SQL_CONTROL = "SIEGECTL" + "x"
+def _sql_payloads():
+    tok = secrets.token_hex(3).upper()
+    return [
+        ("quote-break", f"SIEGE{tok}'\""),      # unbalanced single AND double quote
+        ("paren-break", f"SIEGE{tok}')"),       # break out of a quoted/paren'd value
+    ]
+
+
+def _sql_signature(text: str) -> str | None:
+    t = text.lower()
+    for s in _SQL_SYNTAX_SIGNS:
+        if s in t:
+            return s
+    return None
+
+
+async def _sql_injection(s, tool, cls, identity, real_file) -> list:
+    """A string SQL param interpolated into a query (not bound) surfaces a PARSER error
+    when we feed it an unbalanced quote. Differential: the benign control must NOT
+    produce a syntax signature and the payload MUST -- that pair is what separates a real
+    interpolation sink from a validator that echoes our input or a param bound as data."""
+    if not cls["sql"]:
+        return []
+    out = []
+    for sp in cls["sql"]:
+        # Baseline: does a benign identifier-shaped value already show a syntax signature?
+        ctrl_args = _fill_args(tool, sp, _SQL_CONTROL, real_file)
+        try:
+            ctrl_resp = await s.call(tool["name"], ctrl_args)
+        except ToolError:
+            ctrl_resp = {}
+        if _sql_signature(_blob(ctrl_resp)):
+            continue  # noisy baseline (tool always errors loudly) -> can't differential
+        for label, payload in _sql_payloads():
+            args = _fill_args(tool, sp, payload, real_file)
+            try:
+                resp = await s.call(tool["name"], args)
+            except ToolError:
+                resp = {}
+            sig = _sql_signature(_blob(resp))
+            if sig:
+                out.append(Finding(
+                    probe_class="sink", severity="high",
+                    title=f"SQL injection on '{tool['name']}' via '{sp}' ({label})",
+                    identity=identity,
+                    repro={"tool": tool["name"], "arguments": args},
+                    evidence={
+                        "sink_param": sp, "payload": payload, "sql_error_signature": sig,
+                        "control": _SQL_CONTROL, "channel": "reflected DB parser error",
+                        "explanation": (f"A benign value in '{sp}' returned no SQL error, but an "
+                                        f"unbalanced-quote payload made the database's own parser "
+                                        f"raise a syntax error (matched '{sig}') that surfaced in the "
+                                        f"tool response. The value reaches the SQL string "
+                                        f"interpolated, not bound -- so an attacker-chosen FROM/WHERE "
+                                        f"clause runs (arbitrary read/exfil via UNION/subquery)."),
+                    },
+                    remediation=("Bind values as query parameters (%s / ? placeholders). Identifiers "
+                                 "(table/column names) cannot be bound -- validate them against a strict "
+                                 "allowlist and quote them, and int()-coerce numeric clauses like LIMIT "
+                                 "(the interpolated-SQL class, CWE-89)."),
+                ))
+                break  # one payload proves this param
+    return out
+
+
 # --- orchestration ----------------------------------------------------------------
 
 async def probe_sink(spec, canary_path=None, canary_body=None, real_file=None) -> list:
@@ -419,7 +533,7 @@ async def probe_sink(spec, canary_path=None, canary_body=None, real_file=None) -
             # Re-open per call set so a crashing tool doesn't poison the session.
             for tool in tools[:MAX_TOOLS]:
                 cls = _classify(tool)
-                if not (cls["exec"] or cls["path"] or cls["url"] or cls["invokes"]):
+                if not (cls["exec"] or cls["path"] or cls["url"] or cls["sql"] or cls["invokes"]):
                     continue
                 key = (tool["name"], ident.name)
                 if key in seen:
@@ -431,6 +545,7 @@ async def probe_sink(spec, canary_path=None, canary_body=None, real_file=None) -
                         findings += await _param_injection(s, tool, cls, ident.name, real_file)
                         findings += await _path_traversal(s, tool, cls, ident.name,
                                                           canary_path, canary_body, real_file)
+                        findings += await _sql_injection(s, tool, cls, ident.name, real_file)
                 except Exception:
                     continue
     finally:

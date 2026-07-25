@@ -16,6 +16,9 @@ finding so the probe has real bugs to catch:
                      link-local / metadata (a retrieval MCP server, F1, CWE-918).
   * fetch_urls    -- same, but a URL *list* fetched in a loop = a batched internal
                      port/host-scan oracle the scalar-field guard misses (F2).
+  * preview_table -- f-string's the client `table_name` into `SELECT * FROM
+                     {table_name} LIMIT {limit}` with no validation -> SQL injection
+                     (a DB-inspection MCP server, G1, CWE-89).
 
 Set SIEGE_EXEC_FIXED=1 to run the PATCHED variant (argv exec, strict resolved
 allowlist, canonicalized-and-confined paths). The probe must go loud on the
@@ -28,7 +31,9 @@ All execution is benign: the only thing that ever runs is a Siege canary `echo`.
 
 import ipaddress
 import os
+import re
 import socket
+import sqlite3
 import subprocess
 import urllib.request
 from urllib.parse import urlparse
@@ -36,6 +41,15 @@ from urllib.parse import urlparse
 from mcp.server.fastmcp import FastMCP
 
 FIXED = os.environ.get("SIEGE_EXEC_FIXED") == "1"
+
+# In-process throwaway DB for the SQL-injection fixture (G1 shape). Seeded with one
+# benign table; nothing sensitive -- the probe proves the sink with a parser error,
+# not by reading data.
+_DB = sqlite3.connect(":memory:", check_same_thread=False)
+_DB.execute("CREATE TABLE products (id INTEGER, name TEXT)")
+_DB.executemany("INSERT INTO products VALUES (?,?)", [(1, "widget"), (2, "gadget")])
+_DB.commit()
+_SQL_TABLE_ALLOWLIST = {"products"}
 
 # The claimed-safe command set. Note it ships `env` and `git` -- both spawn other
 # binaries -- which is exactly why a first-token check is not a boundary.
@@ -151,6 +165,29 @@ def fetch_urls(urls: list[str]) -> dict:
         except Exception as e:
             out[u] = {"error": str(e)}
     return out
+
+
+@mcp.tool()
+def preview_table(table_name: str, limit: int = 5) -> dict:
+    """Preview rows from a database table. Returns the first `limit` rows of the
+    named table for schema inspection and data preview."""
+    cur = _DB.cursor()
+    if FIXED:
+        # Identifiers can't be bound -- allowlist + validate, and bind the numeric limit.
+        if table_name not in _SQL_TABLE_ALLOWLIST or not re.fullmatch(r"[A-Za-z0-9_]+", table_name):
+            return {"error": "invalid table name"}
+        try:
+            cur.execute(f'SELECT * FROM "{table_name}" LIMIT ?', (int(limit),))
+            return {"rows": cur.fetchall()}
+        except sqlite3.Error as e:
+            return {"error": str(e)}
+    # VULN (G1): table_name and limit f-string'd raw into SQL, no validation. The DB's
+    # parser error on an unbalanced quote is reflected in {"error": ...}.
+    try:
+        cur.execute(f"SELECT * FROM {table_name} LIMIT {limit}")
+        return {"rows": cur.fetchall()}
+    except sqlite3.Error as e:
+        return {"error": str(e)}
 
 
 if __name__ == "__main__":
